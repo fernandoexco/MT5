@@ -1,0 +1,47 @@
+{
+  "period": {
+    "start": "2024-01-02",
+    "end": "2025-12-30"
+  },
+  "initial_brl": 500.0,
+  "universe": 953,
+  "comparison": [
+    {
+      "name": "Estratégia após custos¹",
+      "final_brl": 479.554045,
+      "return_pct": -4.089191
+    },
+    {
+      "name": "CDB 100% CDI bruto",
+      "final_brl": 632.51641479782,
+      "return_pct": 26.50328295956398
+    },
+    {
+      "name": "CDB 100% CDI líquido²",
+      "final_brl": 612.6389525781469,
+      "return_pct": 22.527790515629384
+    },
+    {
+      "name": "Ibovespa (índice)",
+      "final_brl": 600.3837984871633,
+      "return_pct": 20.07675969743265
+    },
+    {
+      "name": "Reposição pelo IPCA³",
+      "final_brl": 546.5085287243583,
+      "return_pct": 9.301705744871656
+    }
+  ],
+  "closed_trades": 14,
+  "wins": 2,
+  "win_rate_pct": 14.285714285714285,
+  "profit_factor": 0.29830532308881447,
+  "max_drawdown_pct": -4.3803328064741756,
+  "real_return_pct": -12.251315433382379,
+  "loss_lock_date": "2025-02-03",
+  "total_costs": 2.335955,
+  "proceeds_from_distributions": 1.36,
+  "market_exposure_sessions_pct": 38.522954091816366,
+  "average_allocated_brl": 16.37549113772453,
+  "real_orders_sent": 0
+}

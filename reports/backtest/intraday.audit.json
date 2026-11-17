@@ -1,0 +1,10 @@
+{
+  "symbol": "BBOV11",
+  "session": "2024-01-24",
+  "period": "M1",
+  "used_to_change_backtest": false,
+  "bars_received": 16,
+  "first_time": "2024-01-24T10:08:00",
+  "last_time": "2024-01-24T17:07:00",
+  "limitation": "M1 não demonstra bid/ask histórico nem prioridade na fila; D1 continua modelo."
+}

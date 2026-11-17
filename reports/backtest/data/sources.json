@@ -1,0 +1,39 @@
+{
+  "retrieved_at": "2026-11-17T00:55:02.124226+00:00",
+  "sources": [
+    {
+      "file": "COTAHIST_A2023.ZIP",
+      "url": "https://bvmf.bmfbovespa.com.br/InstDados/SerHist/COTAHIST_A2023.ZIP",
+      "bytes": 70216090,
+      "sha256": "ad1603788d78aaa1de806498572277f1d9443f88ae116452751b5800cb23523e"
+    },
+    {
+      "file": "COTAHIST_A2024.ZIP",
+      "url": "https://bvmf.bmfbovespa.com.br/InstDados/SerHist/COTAHIST_A2024.ZIP",
+      "bytes": 79261198,
+      "sha256": "96a003d10fab0fa2ace0c64cdc2b892b4c111adf9da8e538aa0b28437bd2a172"
+    },
+    {
+      "file": "COTAHIST_A2025.ZIP",
+      "url": "https://bvmf.bmfbovespa.com.br/InstDados/SerHist/COTAHIST_A2025.ZIP",
+      "bytes": 89056788,
+      "sha256": "6cc0ad851c8f605ca30418acac48be81f1767f6ed05b4f563772d06ae448047d"
+    },
+    {
+      "file": "sgs12.json",
+      "url": "https://api.bcb.gov.br/dados/serie/bcdata.sgs.12/dados?formato=json&dataInicial=01/12/2023&dataFinal=31/12/2025",
+      "bytes": 21526,
+      "sha256": "3a02b0c5788c804e2e1b12def0e5f2495a77011fbad15fa8812a922045a53793"
+    },
+    {
+      "file": "sgs433.json",
+      "url": "https://api.bcb.gov.br/dados/serie/bcdata.sgs.433/dados?formato=json&dataInicial=01/12/2023&dataFinal=31/12/2025",
+      "bytes": 928,
+      "sha256": "7d8a983020b3403add22a76ea7c688de785effc660d171bfab19aa23d4780606"
+    },
+    {
+      "file": "sgs7.json",
+      "error_type": "HTTPError"
+    }
+  ]
+}
