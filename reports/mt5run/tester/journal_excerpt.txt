@@ -1,0 +1,2 @@
+2026.11.17 11:32:56 Core 01 ITUB4: start time changed to 2021.12.04 00:00 to provide data at beginning
+2026.11.17 11:32:56 Core 01 2021.12.04 00:00:00   Simbolo nao habilita lote fracionario de ate uma acao por volume minimo.
