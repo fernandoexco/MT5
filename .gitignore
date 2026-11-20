@@ -1,0 +1,19 @@
+# Contem o token da API do MT5 - nunca publicar
+.mcp.json
+.codex/
+# Arquivos de trabalho da coleta
+tools/cache_coleta.json
+tools/catalogo.json
+tools/__pycache__/
+__pycache__/
+state/
+reports/connection.json
+reports/symbol_specs.json
+reports/ohlc.snapshot.json
+reports/scan.json
+reports/scans/
+reports/routine.*.json
+reports/scan.run.log
+reports/backtest/data/
+
+*.ex5

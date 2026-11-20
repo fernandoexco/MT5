@@ -1,8 +1,8 @@
-"""Simulador consolidado das estrategias A e B (porta da logica dos EAs MQL5).
+"""Simulador consolidado das estrategias A, B e C (porta da logica dos EAs MQL5).
 
 Nao envia ordens. Le D1 coletado do MT5 (reports/mt5run/data) e simula carteira
 com caixa compartilhado, quantidades inteiras, ate N posicoes e travas de drawdown.
-Uso: py -3.13 tools/sim_swing_portfolio.py  -> reports/mt5run/results.json
+Uso: python tools/sim_swing_portfolio.py  -> reports/mt5run/results.json
 """
 import json, math, pathlib, random, statistics, itertools
 from datetime import datetime
@@ -90,6 +90,8 @@ def default_params():
                 fee=0.0005, fixed=0.05, stop_slip_ticks=2, entry_slip_ticks=1,
                 atr_mult=2.0, reg=120, fast=50, slow=200, zone=30.0,
                 brk=20, volavg=20, rs=60, exitlow=10, max_pos=3, max_agg_risk=7.5,
+                risk_pct=0.005, max_agg_risk_pct=0.015,
+                w20=0.40, w60=0.35, w120=0.25,
                 cost_mult=1.0, slip_mult=1.0)
 
 
@@ -162,13 +164,16 @@ def run(strategy, p, universe=None, start=None, end=END):
     pos = {}                 # sym -> dict
     trades, equity = [], []
     suspended = False
+    peak_equity = p['capital']
     slip = p['stop_slip_ticks'] * TICK * p['slip_mult']
     eslip = p['entry_slip_ticks'] * TICK * p['slip_mult']
     fee = p['fee'] * p['cost_mult']
     fixed = p['fixed'] * p['cost_mult']
+
     for d in DATES:
         if d > end:
             break
+
         # --- abertura: gestao de posicoes abertas (dados ate t-1) ---
         for s in list(pos):
             bars = BARS[s]
@@ -179,6 +184,7 @@ def run(strategy, p, universe=None, start=None, end=END):
             ps = pos[s]
             op = bars[t]['o']
             close_now = False
+
             if strategy == 'A':
                 close_now = exit_signal_A(bars, i, p)
                 if not close_now:
@@ -187,62 +193,211 @@ def run(strategy, p, universe=None, start=None, end=END):
                         new = floor_tick(new)
                         if new > ps['stop']:
                             ps['stop'] = new
-            else:
+            elif strategy == 'B':
                 close_now, low10 = exit_signal_B(bars, i, p)
                 if not close_now and SER[s].atr[i] and op > ps['entry']:
                     new = floor_tick(max(low10, op - SER[s].atr[i] * p['atr_mult']))
                     if new > ps['stop']:
                         ps['stop'] = new
+            elif strategy == 'C':
+                # Saida adicional C: Fechamento abaixo da SMA50 ou Inclinacao <= 0
+                sma50 = sma(bars, i, p['fast'])
+                reg = regression(bars, i, p['reg'])
+                slope = reg[0] if reg else 0
+                close_now = (bars[i]['c'] < sma50) or (slope <= 0)
+                if not close_now:
+                    # Stop movel: Maximo entre stop anterior e maior fechamento desde a entrada - 2 * ATR
+                    # O stop nunca podera ser afastado.
+                    atr = SER[s].atr[i]
+                    if atr is not None:
+                        entry_i = ps['entry_i']
+                        max_c = max(bars[k]['c'] for k in range(entry_i, i + 1))
+                        candidate_stop = floor_tick(max_c - atr * p['atr_mult'])
+                        if candidate_stop > ps['stop']:
+                            ps['stop'] = candidate_stop
+
             if close_now:
                 px = op - eslip
                 cash += _close(ps, px, d, 'sinal', fee, fixed, trades)
                 del pos[s]
+
         # --- trava por drawdown (equity ao abrir, marcada na abertura) ---
         eq_open = cash + sum(ps['qty'] * (BARS[s][IDX[s][d]]['o'] if d in IDX[s] else ps['last'])
                              for s, ps in pos.items())
-        if eq_open <= p['capital'] * (1 - p['susp'] / 100):
-            suspended = True
-            for s in list(pos):
-                t = IDX[s].get(d)
-                px = (BARS[s][t]['o'] - eslip) if t is not None else pos[s]['last']
-                cash += _close(pos[s], px, d, 'suspensao', fee, fixed, trades)
-                del pos[s]
-        entries_ok = (not suspended) and eq_open > p['capital'] * (1 - p['prev'] / 100)
+
+        if strategy == 'C':
+            # Drawdown sobre maior patrimonio consolidado registrado (High-Water Mark)
+            peak_equity = max(peak_equity, eq_open)
+            dd_open = (peak_equity - eq_open) / peak_equity if peak_equity > 0 else 0.0
+            if dd_open >= p['susp'] / 100:
+                suspended = True
+                for s in list(pos):
+                    t = IDX[s].get(d)
+                    px = (BARS[s][t]['o'] - eslip) if t is not None else pos[s]['last']
+                    cash += _close(pos[s], px, d, 'suspensao', fee, fixed, trades)
+                    del pos[s]
+            entries_ok = (not suspended) and (dd_open < p['prev'] / 100)
+        else:
+            if eq_open <= p['capital'] * (1 - p['susp'] / 100):
+                suspended = True
+                for s in list(pos):
+                    t = IDX[s].get(d)
+                    px = (BARS[s][t]['o'] - eslip) if t is not None else pos[s]['last']
+                    cash += _close(pos[s], px, d, 'suspensao', fee, fixed, trades)
+                    del pos[s]
+            entries_ok = (not suspended) and eq_open > p['capital'] * (1 - p['prev'] / 100)
+
         # --- entradas (sinal em t-1, execucao na abertura de t) ---
         if entries_ok:
-            for s in universe:
-                if s in pos or len(pos) >= p['max_pos']:
-                    continue
-                t = IDX[s].get(d)
-                if t is None or t < 1:
-                    continue
-                i = t - 1
-                bars = BARS[s]
-                atr = (sig_A(bars, SER[s], i, p) if strategy == 'A'
-                       else sig_B(bars, SER[s], i, p, ib, iidx))
-                if not atr:
-                    continue
-                ask = bars[t]['o'] + eslip
-                stop = floor_tick(ask - atr * p['atr_mult'])
-                if stop <= 0 or stop >= ask:
-                    continue
-                stressed = max(TICK, stop - p['stop_slip_ticks'] * TICK * p['slip_mult'])
-                risk_ps = (ask - stressed) + (ask + stressed) * fee
-                agg = sum(q['risk'] for q in pos.values())
-                budget = min(p['risk'], max(0.0, eq_open), p['max_agg_risk'] - agg)
-                if budget <= 2 * fixed or risk_ps <= 0:
-                    continue
-                cap_room = min(cash, p['capital'] * p['max_cap_pct'] / 100) if p['max_pos'] == 1 \
-                    else cash
-                q_risk = (budget - 2 * fixed) / risk_ps
-                q_cash = (cap_room - fixed) / (ask * (1 + fee))
-                qty = math.floor(min(q_risk, q_cash) + 1e-9)
-                if qty < 1:
-                    continue
-                cost = qty * ask
-                cash -= cost + cost * fee + fixed
-                pos[s] = dict(sym=s, qty=qty, entry=ask, stop=stop, entry_i=t, entry_date=d,
-                              in_cost=cost * fee + fixed, risk=qty * risk_ps + 2 * fixed, last=ask)
+            if strategy in ('A', 'B'):
+                for s in universe:
+                    if s in pos or len(pos) >= p['max_pos']:
+                        continue
+                    t = IDX[s].get(d)
+                    if t is None or t < 1:
+                        continue
+                    i = t - 1
+                    bars = BARS[s]
+                    atr = (sig_A(bars, SER[s], i, p) if strategy == 'A'
+                           else sig_B(bars, SER[s], i, p, ib, iidx))
+                    if not atr:
+                        continue
+                    ask = bars[t]['o'] + eslip
+                    stop = floor_tick(ask - atr * p['atr_mult'])
+                    if stop <= 0 or stop >= ask:
+                        continue
+                    stressed = max(TICK, stop - p['stop_slip_ticks'] * TICK * p['slip_mult'])
+                    risk_ps = (ask - stressed) + (ask + stressed) * fee
+                    agg = sum(q['risk'] for q in pos.values())
+                    budget = min(p['risk'], max(0.0, eq_open), p['max_agg_risk'] - agg)
+                    if budget <= 2 * fixed or risk_ps <= 0:
+                        continue
+                    cap_room = min(cash, p['capital'] * p['max_cap_pct'] / 100) if p['max_pos'] == 1 \
+                        else cash
+                    q_risk = (budget - 2 * fixed) / risk_ps
+                    q_cash = (cap_room - fixed) / (ask * (1 + fee))
+                    qty = math.floor(min(q_risk, q_cash) + 1e-9)
+                    if qty < 1:
+                        continue
+                    cost = qty * ask
+                    cash -= cost + cost * fee + fixed
+                    pos[s] = dict(sym=s, qty=qty, entry=ask, stop=stop, entry_i=t, entry_date=d,
+                                  in_cost=cost * fee + fixed, risk=qty * risk_ps + 2 * fixed, last=ask)
+            elif strategy == 'C':
+                # Ranking de forca relativa em t-1 no universo elegivel
+                ranked_signals = []
+                rs_pool = []
+                for s in universe:
+                    t = IDX[s].get(d)
+                    if t is None or t < 1:
+                        continue
+                    i = t - 1
+                    bars = BARS[s]
+                    if i < max(p['slow'], p['reg']) + 10 or SER[s].atr[i] is None:
+                        continue
+                    date_i = bars[i]['date']
+                    j = iidx.get(date_i)
+                    if j is None or j < 120:
+                        continue
+                    rs20 = (bars[i]['c'] / bars[i - 20]['c'] - 1) - (ib[j]['c'] / ib[j - 20]['c'] - 1)
+                    rs60 = (bars[i]['c'] / bars[i - 60]['c'] - 1) - (ib[j]['c'] / ib[j - 60]['c'] - 1)
+                    rs120 = (bars[i]['c'] / bars[i - 120]['c'] - 1) - (ib[j]['c'] / ib[j - 120]['c'] - 1)
+                    rs_pool.append((s, rs20, rs60, rs120, i, t))
+
+                if len(rs_pool) >= len(universe):
+                    n_pool = len(rs_pool)
+                    if n_pool <= 1:
+                        p20 = {rs_pool[0][0]: 100.0}
+                        p60 = {rs_pool[0][0]: 100.0}
+                        p120 = {rs_pool[0][0]: 100.0}
+                    else:
+                        p20 = {s: rank / (n_pool - 1) * 100 for rank, (s, _, _, _, _, _) in enumerate(sorted(rs_pool, key=lambda x: x[1]))}
+                        p60 = {s: rank / (n_pool - 1) * 100 for rank, (s, _, _, _, _, _) in enumerate(sorted(rs_pool, key=lambda x: x[2]))}
+                        p120 = {s: rank / (n_pool - 1) * 100 for rank, (s, _, _, _, _, _) in enumerate(sorted(rs_pool, key=lambda x: x[3]))}
+
+                    cands = []
+                    for s, rs20, rs60, rs120, i, t in rs_pool:
+                        bars = BARS[s]
+                        sma50 = sma(bars, i, p['fast'])
+                        sma200 = sma(bars, i, p['slow'])
+                        sma50_prev10 = sma(bars, i - 10, p['fast'])
+                        # Filtros obrigatorios:
+                        # RS20 > 0, RS60 > 0, Fechamento > SMA50, SMA50 > SMA200, SMA50 atual > SMA50 de 10 pregoes atras
+                        if rs20 <= 0 or rs60 <= 0:
+                            continue
+                        if bars[i]['c'] <= sma50 or sma50 <= sma200 or sma50 <= sma50_prev10:
+                            continue
+                        score = p['w20'] * p20[s] + p['w60'] * p60[s] + p['w120'] * p120[s]
+                        atr = SER[s].atr[i]
+                        atr_ratio = (atr / bars[i]['c']) if (atr and bars[i]['c'] > 0) else 999.0
+                        cands.append((s, score, atr_ratio, i, t, atr))
+
+                    # Ordenar por SCORE desc, menor ATR/close, ticker asc
+                    cands.sort(key=lambda x: (-x[1], x[2], x[0]))
+                    top3 = cands[:3]
+
+                    # Validar canal de alta para os TOP 3
+                    for s, score, atr_ratio, i, t, atr in top3:
+                        if s in pos or len(pos) >= p['max_pos']:
+                            continue
+                        bars = BARS[s]
+                        reg = regression(bars, i, p['reg'])
+                        if not reg:
+                            continue
+                        slope, icpt, sigma = reg
+                        if slope <= 0 or sigma <= 1e-12:
+                            continue
+                        sma50 = sma(bars, i, p['fast'])
+                        sma200 = sma(bars, i, p['slow'])
+                        sma50_prev10 = sma(bars, i - 10, p['fast'])
+                        if sma50 <= sma200 or sma50 <= sma50_prev10 or bars[i]['c'] <= sma200:
+                            continue
+
+                        center = math.exp(icpt + slope * (p['reg'] - 1))
+                        lower = math.exp(icpt + slope * (p['reg'] - 1) - 2.0 * sigma)
+                        upper = math.exp(icpt + slope * (p['reg'] - 1) + 2.0 * sigma)
+
+                        in_zone = (lower <= bars[i]['c'] <= center)
+                        confirmed = (bars[i]['c'] > bars[i - 1]['h'])
+                        not_above_upper = (bars[i]['c'] <= upper)
+
+                        if in_zone and confirmed and not_above_upper and atr:
+                            ranked_signals.append((s, score, atr, t))
+
+                # Priorizar sinais por maior SCORE
+                ranked_signals.sort(key=lambda x: -x[1])
+
+                for s, score, atr, t in ranked_signals:
+                    if s in pos or len(pos) >= p['max_pos']:
+                        continue
+                    bars = BARS[s]
+                    ask = bars[t]['o'] + eslip
+                    stop = floor_tick(ask - atr * p['atr_mult'])
+                    if stop <= 0 or stop >= ask:
+                        continue
+                    stressed = max(TICK, stop - p['stop_slip_ticks'] * TICK * p['slip_mult'])
+                    risk_ps = (ask - stressed) + (ask + stressed) * fee
+                    agg = sum(q['risk'] for q in pos.values())
+
+                    # Risco monetario maximo: Patrimonio atual * 0.005 (0.5%)
+                    # Risco agregado: ate 1.5% do patrimonio
+                    max_op_risk = eq_open * p['risk_pct']
+                    max_agg_risk = eq_open * p['max_agg_risk_pct']
+                    budget = min(max_op_risk, max_agg_risk - agg)
+                    if budget <= 2 * fixed or risk_ps <= 0:
+                        continue
+
+                    cap_room = min(cash, eq_open * p['max_cap_pct'] / 100) if p['max_pos'] == 1 else cash
+                    q_risk = (budget - 2 * fixed) / risk_ps
+                    q_cash = (cap_room - fixed) / (ask * (1 + fee))
+                    qty = math.floor(min(q_risk, q_cash) + 1e-9)
+                    if qty < 1:
+                        continue
+                    cost = qty * ask
+                    cash -= cost + cost * fee + fixed
+                    pos[s] = dict(sym=s, qty=qty, entry=ask, stop=stop, entry_i=t, entry_date=d,
+                                  in_cost=cost * fee + fixed, risk=qty * risk_ps + 2 * fixed, last=ask)
+
         # --- intradia: stops ---
         for s in list(pos):
             t = IDX[s].get(d)
@@ -256,10 +411,12 @@ def run(strategy, p, universe=None, start=None, end=END):
                 px = max(px, TICK)
                 cash += _close(ps, px, d, 'stop', fee, fixed, trades)
                 del pos[s]
+
         eq = cash + sum(ps['qty'] * ps['last'] for ps in pos.values())
         equity.append((d, eq))
-        if suspended and not pos:
-            pass
+        if strategy == 'C':
+            peak_equity = max(peak_equity, eq)
+
     # encerra posicoes abertas ao fim (marcacao, nao simulada como venda)
     open_at_end = {s: dict(qty=ps['qty'], entry=ps['entry'], last=ps['last']) for s, ps in pos.items()}
     return dict(trades=trades, equity=equity, open_at_end=open_at_end, suspended=suspended)
@@ -282,7 +439,7 @@ def metrics(res, p, lo=None, hi=None):
     out = {'n_trades': len(tr)}
     if eq:
         start_v = eq[0][1] if lo else p['capital']
-        if lo:   # base = equity do dia anterior ao inicio
+        if lo:
             prev = [v for d, v in res['equity'] if d < lo]
             start_v = prev[-1] if prev else p['capital']
         end_v = eq[-1][1]
@@ -378,18 +535,17 @@ def main():
         jumps = [(b[k]['date'], round((b[k]['o'] / b[k - 1]['c'] - 1) * 100, 1)) for k in range(1, len(b))
                  if abs(b[k]['o'] / b[k - 1]['c'] - 1) > 0.15]
         out['data'][s] = dict(first=b[0]['date'], last=b[-1]['date'], bars=len(b), gaps_gt15pct=jumps)
+
     results = {}
-    for strat in ('A', 'B'):
+    for strat in ('A', 'B', 'C'):
         res, rep = full_report(strat, base)
         rep['bootstrap95_expectancy'] = boot_ci(res['trades'])
         rep['trades'] = res['trades']
         rep['equity_sample'] = res['equity'][::5]
-        # por ativo (contribuicao na carteira)
-        per = {}
-        for t in res['trades']:
-            pass
+
         results[strat] = rep
-        # contribuicao por ativo: reexecuta com universo de 1 ativo e max_pos=1 (standalone R$500)
+
+        # Contribuicao por ativo: reexecuta com universo de 1 ativo e max_pos=1 (standalone R$500)
         solo = {}
         for s in UNIVERSE:
             sp = dict(base, max_pos=1)
@@ -398,41 +554,57 @@ def main():
                        'mdd': m1['total'].get('max_dd_pct'), 'pf': m1['total'].get('profit_factor'),
                        'oos_ret': m1['fora_da_amostra(2025..2026-11-16)'].get('ret_pct')}
         rep['solo_assets'] = solo
-        # leave-one-out
+
+        # Leave-one-out
         loo = {}
         for s in UNIVERSE:
             _, m = full_report(strat, base, [x for x in UNIVERSE if x != s])
             loo[s] = {'ret_pct': m['total'].get('ret_pct'), 'n': m['total']['n_trades'],
                       'mdd': m['total'].get('max_dd_pct')}
         rep['leave_one_out'] = loo
-        # robustez de custos/slippage
+
+        # Robustez de custos/slippage
         rob = {}
-        for name, upd in {'custos x2': dict(cost_mult=2.0), 'custos x4': dict(cost_mult=4.0),
-                          'slippage x3': dict(slip_mult=3.0), 'custos x2 + slippage x3': dict(cost_mult=2.0, slip_mult=3.0)}.items():
+        for name, upd in {'custos x2': dict(cost_mult=2.0),
+                          'custos x4': dict(cost_mult=4.0),
+                          'slippage x3': dict(slip_mult=3.0),
+                          'custos x2 + slippage x3': dict(cost_mult=2.0, slip_mult=3.0)}.items():
             _, m = full_report(strat, dict(base, **upd))
             rob[name] = {k: m[k].get('ret_pct') for k in ('total', 'fora_da_amostra(2025..2026-11-16)')}
-            rob[name]['mdd'] = m['total'].get('max_dd_pct'); rob[name]['n'] = m['total']['n_trades']
+            rob[name]['mdd'] = m['total'].get('max_dd_pct')
+            rob[name]['n'] = m['total']['n_trades']
         rep['robust_costs'] = rob
-        # sensibilidade de parametros (nenhum escolhido a partir do resultado; so reporta)
-        grid = {'A': [dict(atr_mult=1.5), dict(atr_mult=3.0), dict(reg=90), dict(reg=150), dict(zone=20.0), dict(zone=40.0), dict(fast=40), dict(slow=150)],
-                'B': [dict(atr_mult=1.5), dict(atr_mult=3.0), dict(brk=15), dict(brk=30), dict(exitlow=7), dict(exitlow=15), dict(rs=40), dict(rs=90)]}[strat]
+
+        # Sensibilidade de parametros
+        grid = {
+            'A': [dict(atr_mult=1.5), dict(atr_mult=3.0), dict(reg=90), dict(reg=150), dict(zone=20.0), dict(zone=40.0), dict(fast=40), dict(slow=150)],
+            'B': [dict(atr_mult=1.5), dict(atr_mult=3.0), dict(brk=15), dict(brk=30), dict(exitlow=7), dict(exitlow=15), dict(rs=40), dict(rs=90)],
+            'C': [dict(atr_mult=1.5), dict(atr_mult=3.0), dict(reg=90), dict(reg=150), dict(fast=40), dict(slow=150), dict(prev=4.0), dict(susp=8.0)]
+        }[strat]
+
         sens = []
         for upd in grid:
             _, m = full_report(strat, dict(base, **upd))
-            sens.append({'param': upd, 'ret_pct': m['total'].get('ret_pct'), 'oos_ret': m['fora_da_amostra(2025..2026-11-16)'].get('ret_pct'),
-                         'mdd': m['total'].get('max_dd_pct'), 'n': m['total']['n_trades'], 'pf': m['total'].get('profit_factor')})
+            sens.append({'param': upd, 'ret_pct': m['total'].get('ret_pct'),
+                         'oos_ret': m['fora_da_amostra(2025..2026-11-16)'].get('ret_pct'),
+                         'mdd': m['total'].get('max_dd_pct'), 'n': m['total']['n_trades'],
+                         'pf': m['total'].get('profit_factor')})
         rep['sensitivity'] = sens
-        # capital sem limite de posicoes = 1 (comparacao)
+
+        # Capital sem limite de posicoes = 1 (comparacao)
         _, m1 = full_report(strat, dict(base, max_pos=1))
         rep['max_pos_1'] = {k: m1[k] for k in ('total', 'fora_da_amostra(2025..2026-11-16)')}
-        # concentracao
+
+        # Concentracao
         tr = res['trades']
         if tr:
             pnls = sorted((t['pnl'] for t in tr), reverse=True)
             tot = sum(pnls)
-            rep['concentration'] = {'n': len(tr), 'net': round(tot, 2), 'top1': pnls[0], 'top3': round(sum(pnls[:3]), 2),
+            rep['concentration'] = {'n': len(tr), 'net': round(tot, 2), 'top1': pnls[0],
+                                    'top3': round(sum(pnls[:3]), 2),
                                     'net_without_top3': round(tot - sum(pnls[:3]), 2)}
-        # janelas de queda do IBOV (meses com IBOV < 0): retorno da carteira nesses meses
+
+        # Janelas de regime do IBOV
         ibm = {}
         for b in BARS['IBOV']:
             ibm.setdefault(b['date'][:7], []).append(b['c'])
@@ -444,18 +616,29 @@ def main():
         down, up = [], []
         pib = None
         for mo in months:
-            e1 = eqm[mo][-1]; i1 = ibm[mo][-1]
+            e1 = eqm[mo][-1]
+            i1 = ibm[mo][-1]
             if pib is not None:
                 (down if i1 < pib else up).append(e1 / prev_eq - 1)
             prev_eq, pib = e1, i1
-        rep['regime'] = {'meses_ibov_queda': len(down), 'ret_medio_nesses_%': round(statistics.mean(down) * 100, 2) if down else None,
-                         'meses_ibov_alta': len(up), 'ret_medio_nesses_alta_%': round(statistics.mean(up) * 100, 2) if up else None}
+        rep['regime'] = {
+            'meses_ibov_queda': len(down),
+            'ret_medio_nesses_%': round(statistics.mean(down) * 100, 2) if down else None,
+            'meses_ibov_alta': len(up),
+            'ret_medio_nesses_alta_%': round(statistics.mean(up) * 100, 2) if up else None
+        }
+
     out['results'] = results
     (ROOT / 'reports/mt5run/results.json').write_text(json.dumps(out, indent=1, default=str), encoding='utf-8')
-    for s in ('A', 'B'):
+
+    for s in ('A', 'B', 'C'):
         r = results[s]
-        print(s, json.dumps(r['total']), '\n  OOS', json.dumps(r['fora_da_amostra(2025..2026-11-16)']))
-    print(json.dumps(out['bench']))
+        print(f"=== ESTRATEGIA {s} ===")
+        print("Total:", json.dumps(r['total']))
+        print("OOS:  ", json.dumps(r['fora_da_amostra(2025..2026-11-16)']))
+        print("Years:", json.dumps(r['years']))
+        print()
+    print("Benchmark:", json.dumps(out['bench']))
 
 
 if __name__ == '__main__':
