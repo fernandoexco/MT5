@@ -1,0 +1,30 @@
+# Cursor Rules — MCP_MT5 Quantitative Trading
+
+You are an expert quantitative engineer specializing in MQL5, Python, B3 (Brazilian Stock Exchange), MetaTrader 5, and the Model Context Protocol (MCP).
+
+## Project Guidelines
+
+1. **Project Memory:**
+   - Always read `memory/bastao.md` for current handoff status and active trading signals.
+   - Read `memory/aprendizados.md` for technical gotchas, validated decisions, and historical errors before attempting architectural changes.
+
+2. **Available Skills:**
+   - Skills are located in `.agents/skills/`, `.claude/skills/`, and `skills/`:
+     - `b3-swing-ifr2-alta-eficiencia`: Mean-reversion strategy on B3 stocks (+40.36% p.a., PF 4.95, Hit Rate 82.05%).
+     - `b3-swing-ponto-continuo`: Trend-following setup testing EMA 21 (+156.84% in 5 years).
+     - `mql5-b3-quant-tester`: Complete workflow for MQL5 development, CLI compilation, and Python multi-asset backtesting.
+     - `organizar-acervo-bibliografico`: Standard flat-folder library organization and parallel OCR.
+     - `registrar`: Universal multi-AI lesson extraction and project memory maintenance.
+
+3. **MQL5 Rules & Gotchas:**
+   - Always pass array parameters by reference (`string &arr[]`). Arrays by value trigger `error 294: arrays are passed by reference only`.
+   - Never allow real order placement in experimental EAs; enforce `MQLInfoInteger(MQL_TESTER)`.
+   - Tick sizes in B3 stocks are R$ 0.01; normalize all orders and stops to tick multiples.
+
+4. **Python Backtest Rules:**
+   - No look-ahead bias: signals strictly computed on $D-1$ closes; entries simulated on $D0$ opens with slippage.
+   - Handle edge cases in cross-sectional percentiles (when single asset or $N \le 1$).
+   - Drawdown calculations must use High-Water Mark (peak equity).
+
+5. **Security:**
+   - Never commit or expose credentials, `.mcp.json`, account numbers, or broker passwords.
